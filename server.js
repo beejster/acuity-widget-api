@@ -1,6 +1,6 @@
 // server.js
 // npm install express axios node-cache body-parser cors dotenv
-require('dotenv').config(); // Load .env for local dev only
+require('dotenv').config();
 
 const express = require('express');
 const axios = require('axios');
@@ -10,9 +10,9 @@ const cors = require('cors');
 
 const app = express();
 app.use(bodyParser.json());
-app.use(cors()); // Allow widget on any domain
+app.use(cors());
 
-// Bulletproof CORS headers
+// Bulletproof CORS
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -37,7 +37,7 @@ function acuityAuthHeader() {
   return `Basic ${token}`;
 }
 
-// Fixed to MST (Edmonton) — handles DST automatically
+// MST (Edmonton) formatting
 const MST_TZ = 'America/Edmonton';
 function prettyDateTime(isoString, locale = 'en-US') {
   const d = new Date(isoString);
@@ -58,7 +58,6 @@ function prettyDateTime(isoString, locale = 'en-US') {
 
   const timeStr = `${obj.hour}:${String(obj.minute).padStart(2, '0')} ${obj.period || ''}`.trim();
 
-  // Same day check in MST
   const dMST = new Date(d.toLocaleString('en-US', { timeZone: MST_TZ }));
   const nowMST = new Date(now.toLocaleString('en-US', { timeZone: MST_TZ }));
   const sameDay = dMST.toDateString() === nowMST.toDateString();
@@ -69,15 +68,13 @@ function prettyDateTime(isoString, locale = 'en-US') {
   return `${obj.weekday}, ${obj.month} ${obj.day} — ${timeStr}`;
 }
 
-// GET /api/next-appointment?appointmentTypeID=8355307&locale=en-US
-// Returns NEXT AVAILABLE (OPEN) SLOT, not booked appointments
+// GET /api/next-appointment?appointmentTypeID=8355307
 app.get('/api/next-appointment', async (req, res) => {
   try {
     const appointmentTypeID = req.query.appointmentTypeID;
-    const calendarID = req.query.calendarID; // Backward compatibility
+    const calendarID = req.query.calendarID;
     const locale = req.query.locale || 'en-US';
 
-    // Require either appointmentTypeID or calendarID
     if (!appointmentTypeID && !calendarID) {
       return res.json({
         found: false,
@@ -89,19 +86,14 @@ app.get('/api/next-appointment', async (req, res) => {
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    // Use availability/times endpoint for OPEN SLOTS
+    // Required: date parameter (YYYY-MM-DD)
     const today = new Date().toISOString().split('T')[0];
-    const maxDateObj = new Date();
-    maxDateObj.setDate(maxDateObj.getDate() + 30); // 30 days
-    const maxDate = maxDateObj.toISOString().split('T')[0];
 
     const params = {
-      minDate: today,
-      maxDate
+      date: today,
+      appointmentTypeID: appointmentTypeID || '',
+      calendarID: calendarID || ''
     };
-
-    if (appointmentTypeID) params.appointmentTypeID = appointmentTypeID;
-    if (calendarID) params.calendarID = calendarID;
 
     const resp = await axios.get('https://acuityscheduling.com/api/v1/availability/times', {
       headers: { Authorization: acuityAuthHeader() },
@@ -131,7 +123,7 @@ app.get('/api/next-appointment', async (req, res) => {
       }
     } : {
       found: false,
-      display: 'No availability in next 30 days'
+      display: 'No availability today'
     };
 
     cache.set(cacheKey, payload, CACHE_TTL_SECONDS);
@@ -143,25 +135,18 @@ app.get('/api/next-appointment', async (req, res) => {
   }
 });
 
-// Backward compatibility endpoint (still works with old calendarID param)
-app.get('/api/next-appointment-old', async (req, res) => {
-  res.redirect('/api/next-appointment');
-});
-
-// Webhook: invalidate cache on changes
+// Webhook
 app.post('/webhook/acuity', (req, res) => {
   cache.flushAll();
-  console.log('Cache cleared by Acuity webhook');
   res.status(200).send('ok');
 });
 
-// Health check
+// Health
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Next-appointment API listening on port ${PORT}`);
-  console.log(`Health: https://your-domain.onrender.com/health`);
+  console.log(`API running on port ${PORT}`);
 });
