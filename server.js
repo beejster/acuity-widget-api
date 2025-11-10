@@ -56,17 +56,42 @@ function prettyDateTime(isoString, locale = 'en-US') {
   const parts = formatter.formatToParts(d);
   const obj = parts.reduce((acc, p) => ({ ...acc, [p.type]: p.value }), {});
 
+// Add "Tomorrow" + full weekday (within current week)
   const timeStr = `${obj.hour}:${String(obj.minute).padStart(2, '0')} ${obj.period || ''}`.trim();
 
+  // Convert to MST for accurate date math
   const dMST = new Date(d.toLocaleString('en-US', { timeZone: MST_TZ }));
   const nowMST = new Date(now.toLocaleString('en-US', { timeZone: MST_TZ }));
+
+  // Same day
   const sameDay = dMST.toDateString() === nowMST.toDateString();
+
+  // Tomorrow
+  const tomorrowMST = new Date(nowMST);
+  tomorrowMST.setDate(tomorrowMST.getDate() + 1);
+  const isTomorrow = dMST.toDateString() === tomorrowMST.toDateString();
+
+  // Current week: Monday to Sunday
+  const weekStart = new Date(nowMST);
+  weekStart.setDate(nowMST.getDate() - nowMST.getDay() + 1); // Monday
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6); // Sunday
+
+  const isThisWeek = dMST >= weekStart && dMST <= weekEnd;
+
+  // Full weekday name
+  const fullWeekday = dMST.toLocaleDateString('en-US', { weekday: 'long', timeZone: MST_TZ });
 
   if (sameDay) {
     return `Today: ${timeStr}`;
   }
+  if (isTomorrow) {
+    return `Tomorrow: ${timeStr}`;
+  }
+  if (isThisWeek) {
+    return `${fullWeekday}: ${timeStr}`;
+  }
   return `${obj.weekday}, ${obj.month} ${obj.day} — ${timeStr}`;
-}
 
 // GET /api/next-appointment?appointmentTypeID=8355307
 app.get('/api/next-appointment', async (req, res) => {
