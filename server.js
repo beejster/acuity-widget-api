@@ -46,14 +46,14 @@ function formatTime(isoString, locale = 'en-US') {
 
     // Today
     if (dMST.toDateString() === nowMST.toDateString()) {
-      return `Today: ${timeStr}`;
+      return `Today at ${timeStr}`;
     }
 
     // Tomorrow
     const tomorrow = new Date(nowMST);
     tomorrow.setDate(tomorrow.getDate() + 1);
     if (dMST.toDateString() === tomorrow.toDateString()) {
-      return `Tomorrow: ${timeStr}`;
+      return `Tomorrow at ${timeStr}`;
     }
 
     // This week (Mon–Sun)
@@ -64,7 +64,7 @@ function formatTime(isoString, locale = 'en-US') {
 
     if (dMST >= weekStart && dMST <= weekEnd) {
       const fullWeekday = dMST.toLocaleDateString(locale, { weekday: 'long', timeZone: MST_TZ });
-      return `${fullWeekday}: ${timeStr}`;
+      return `${fullWeekday} at ${timeStr}`;
     }
 
     // Default: Wed, Nov 12 — 2:00 PM
@@ -74,7 +74,7 @@ function formatTime(isoString, locale = 'en-US') {
       day: 'numeric',
       timeZone: MST_TZ
     });
-    return `${shortDate} — ${timeStr}`;
+    return `${shortDate} at ${timeStr}`;
   } catch (e) {
     return 'Invalid time';
   }
