@@ -12,6 +12,13 @@ const app = express();
 app.use(bodyParser.json());
 app.use(cors()); // Allow widget on any domain
 
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*'); // Or your domain: 'https://your-site.com'
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  if (req.method === 'OPTIONS') res.sendStatus(200);
+  next();
+});
+
 const CACHE_TTL_SECONDS = 60;
 const cache = new NodeCache({ stdTTL: CACHE_TTL_SECONDS });
 
