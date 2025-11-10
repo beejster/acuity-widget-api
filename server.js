@@ -12,10 +12,12 @@ const app = express();
 app.use(bodyParser.json());
 app.use(cors()); // Allow widget on any domain
 
+// Bulletproof CORS headers
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*'); // Or your domain: 'https://your-site.com'
+  res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  if (req.method === 'OPTIONS') res.sendStatus(200);
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
 
@@ -67,43 +69,54 @@ function prettyDateTime(isoString, locale = 'en-US') {
   return `${obj.weekday}, ${obj.month} ${obj.day} — ${timeStr}`;
 }
 
-// GET /api/next-appointment?calendarID=123&locale=en-GB
-// OR ?appointmentType=8355307 (for combined city view)
+// GET /api/next-appointment?appointmentTypeID=8355307&locale=en-US
+// Returns NEXT AVAILABLE (OPEN) SLOT, not booked appointments
 app.get('/api/next-appointment', async (req, res) => {
   try {
-    const calendarID = req.query.calendarID;
-    const appointmentType = req.query.appointmentType;
+    const appointmentTypeID = req.query.appointmentTypeID;
+    const calendarID = req.query.calendarID; // Backward compatibility
     const locale = req.query.locale || 'en-US';
-    const cacheKey = `next:${calendarID || ''}:${appointmentType || ''}`;
 
+    // Require either appointmentTypeID or calendarID
+    if (!appointmentTypeID && !calendarID) {
+      return res.json({
+        found: false,
+        display: 'No appointment type or calendar specified'
+      });
+    }
+
+    const cacheKey = `avail:${appointmentTypeID || calendarID}`;
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    const today = new Date();
-    const minDate = today.toISOString().split('T')[0];
+    // Use availability/times endpoint for OPEN SLOTS
+    const today = new Date().toISOString().split('T')[0];
+    const maxDateObj = new Date();
+    maxDateObj.setDate(maxDateObj.getDate() + 30); // 30 days
+    const maxDate = maxDateObj.toISOString().split('T')[0];
 
     const params = {
-      minDate,
-      maxAppointments: 50,
-      sort: 'datetime.asc'
+      minDate: today,
+      maxDate
     };
-    if (calendarID) params.calendarID = calendarID;
-    if (appointmentType) params.appointmentTypeID = appointmentType;
 
-    const resp = await axios.get('https://acuityscheduling.com/api/v1/appointments', {
+    if (appointmentTypeID) params.appointmentTypeID = appointmentTypeID;
+    if (calendarID) params.calendarID = calendarID;
+
+    const resp = await axios.get('https://acuityscheduling.com/api/v1/availability/times', {
       headers: { Authorization: acuityAuthHeader() },
       params
     });
 
-    const appts = (resp.data || []).filter(a => !a.canceled && !a.noShow);
+    const slots = (resp.data || []).sort((a, b) => new Date(a.time) - new Date(b.time));
 
     let next = null;
     const now = new Date();
-    for (const a of appts) {
-      if (!a.datetime) continue;
-      const dt = new Date(a.datetime);
+    for (const slot of slots) {
+      if (!slot.time) continue;
+      const dt = new Date(slot.time);
       if (dt > now) {
-        next = { raw: a, datetime: a.datetime };
+        next = { datetime: slot.time };
         break;
       }
     }
@@ -112,22 +125,43 @@ app.get('/api/next-appointment', async (req, res) => {
       found: true,
       display: prettyDateTime(next.datetime, locale),
       datetime: next.datetime,
-      appointment: { id: next.raw.id, type: next.raw.appointmentTypeName || next.raw.appointmentTypeID || null }
-    } : { found: false, display: 'No upcoming appointments' };
+      appointment: {
+        type: appointmentTypeID || calendarID,
+        isAvailable: true
+      }
+    } : {
+      found: false,
+      display: 'No availability in next 30 days'
+    };
 
     cache.set(cacheKey, payload, CACHE_TTL_SECONDS);
     res.json(payload);
+
   } catch (err) {
-    console.error('Error fetching Acuity appointments', err?.response?.data || err.message || err);
-    res.status(500).json({ error: 'Failed to fetch appointments' });
+    console.error('Availability error:', err?.response?.data || err.message || err);
+    res.status(500).json({ error: 'Failed to fetch availability' });
   }
+});
+
+// Backward compatibility endpoint (still works with old calendarID param)
+app.get('/api/next-appointment-old', async (req, res) => {
+  res.redirect('/api/next-appointment');
 });
 
 // Webhook: invalidate cache on changes
 app.post('/webhook/acuity', (req, res) => {
   cache.flushAll();
+  console.log('Cache cleared by Acuity webhook');
   res.status(200).send('ok');
 });
 
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Next-appointment API listening on ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Next-appointment API listening on port ${PORT}`);
+  console.log(`Health: https://your-domain.onrender.com/health`);
+});
