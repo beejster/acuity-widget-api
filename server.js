@@ -1,5 +1,6 @@
 // server.js
-require('dotenv').config(); // ← ADD THIS LINE
+// npm install express axios node-cache body-parser cors dotenv
+require('dotenv').config(); // Load .env for local dev only
 
 const express = require('express');
 const axios = require('axios');
@@ -9,7 +10,7 @@ const cors = require('cors');
 
 const app = express();
 app.use(bodyParser.json());
-app.use(cors());
+app.use(cors()); // Allow widget on any domain
 
 const CACHE_TTL_SECONDS = 60;
 const cache = new NodeCache({ stdTTL: CACHE_TTL_SECONDS });
@@ -18,7 +19,7 @@ const ACUITY_USER = process.env.ACUITY_USER_ID;
 const ACUITY_KEY = process.env.ACUITY_API_KEY;
 
 if (!ACUITY_USER || !ACUITY_KEY) {
-  console.error('ACUITY_USER_ID and ACUITY_API_KEY must be set in .env');
+  console.error('ACUITY_USER_ID and ACUITY_API_KEY must be set in environment');
   process.exit(1);
 }
 
@@ -27,7 +28,7 @@ function acuityAuthHeader() {
   return `Basic ${token}`;
 }
 
-// Fixed to MST (Edmonton) — no DST handling needed; Acuity uses UTC, we convert
+// Fixed to MST (Edmonton) — handles DST automatically
 const MST_TZ = 'America/Edmonton';
 function prettyDateTime(isoString, locale = 'en-US') {
   const d = new Date(isoString);
@@ -46,9 +47,9 @@ function prettyDateTime(isoString, locale = 'en-US') {
   const parts = formatter.formatToParts(d);
   const obj = parts.reduce((acc, p) => ({ ...acc, [p.type]: p.value }), {});
 
-  const timeStr = `${obj.hour}:${obj.minute.padStart(2, '0')} ${obj.period || ''}`.trim();
+  const timeStr = `${obj.hour}:${String(obj.minute).padStart(2, '0')} ${obj.period || ''}`.trim();
 
-  // Check if same day in MST
+  // Same day check in MST
   const dMST = new Date(d.toLocaleString('en-US', { timeZone: MST_TZ }));
   const nowMST = new Date(now.toLocaleString('en-US', { timeZone: MST_TZ }));
   const sameDay = dMST.toDateString() === nowMST.toDateString();
@@ -60,11 +61,14 @@ function prettyDateTime(isoString, locale = 'en-US') {
 }
 
 // GET /api/next-appointment?calendarID=123&locale=en-GB
+// OR ?appointmentType=8355307 (for combined city view)
 app.get('/api/next-appointment', async (req, res) => {
   try {
     const calendarID = req.query.calendarID;
+    const appointmentType = req.query.appointmentType;
     const locale = req.query.locale || 'en-US';
-    const cacheKey = `next:${calendarID || 'all'}`;
+    const cacheKey = `next:${calendarID || ''}:${appointmentType || ''}`;
+
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
@@ -77,6 +81,7 @@ app.get('/api/next-appointment', async (req, res) => {
       sort: 'datetime.asc'
     };
     if (calendarID) params.calendarID = calendarID;
+    if (appointmentType) params.appointmentType = appointmentType;
 
     const resp = await axios.get('https://acuityscheduling.com/api/v1/appointments', {
       headers: { Authorization: acuityAuthHeader() },
