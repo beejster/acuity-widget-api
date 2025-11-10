@@ -1,188 +1,160 @@
 // server.js
-// npm install express axios node-cache body-parser cors dotenv
+// Vercel-optimized Acuity availability widget
+// Shows next OPEN slot in MST (Edmonton) with smart formatting
 require('dotenv').config();
 
 const express = require('express');
 const axios = require('axios');
 const NodeCache = require('node-cache');
-const bodyParser = require('body-parser');
 const cors = require('cors');
 
 const app = express();
-app.use(bodyParser.json());
 app.use(cors());
+app.use(express.json());
 
-// Bulletproof CORS
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
+// Vercel: 10s function timeout → guard at 8s
+const FUNCTION_TIMEOUT_MS = 8000;
 
-const CACHE_TTL_SECONDS = 60;
-const cache = new NodeCache({ stdTTL: CACHE_TTL_SECONDS });
+const cache = new NodeCache({ stdTTL: 60 });
 
 const ACUITY_USER = process.env.ACUITY_USER_ID;
 const ACUITY_KEY = process.env.ACUITY_API_KEY;
 
 if (!ACUITY_USER || !ACUITY_KEY) {
-  console.error('ACUITY_USER_ID and ACUITY_API_KEY must be set in environment');
+  console.error('Missing ACUITY_USER_ID or ACUITY_API_KEY');
   process.exit(1);
 }
 
-function acuityAuthHeader() {
-  const token = Buffer.from(`${ACUITY_USER}:${ACUITY_KEY}`).toString('base64');
-  return `Basic ${token}`;
-}
+const authHeader = `Basic ${Buffer.from(`${ACUITY_USER}:${ACUITY_KEY}`).toString('base64')}`;
 
-// MST (Edmonton) formatting
+// MST (Edmonton) timezone
 const MST_TZ = 'America/Edmonton';
-function prettyDateTime(isoString, locale = 'en-US') {
-  const d = new Date(isoString);
-  const now = new Date();
 
-  const formatter = new Intl.DateTimeFormat(locale, {
-    timeZone: MST_TZ,
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    hour12: true
-  });
+// Smart time formatting: Today → Tomorrow → Full weekday (this week) → Short date
+function formatTime(isoString, locale = 'en-US') {
+  try {
+    const d = new Date(isoString);
+    const now = new Date();
 
-  const parts = formatter.formatToParts(d);
-  const obj = parts.reduce((acc, p) => ({ ...acc, [p.type]: p.value }), {});
+    // Format time in MST
+    const timeOpts = { timeZone: MST_TZ, hour: 'numeric', minute: '2-digit', hour12: true };
+    const timeStr = d.toLocaleTimeString(locale, timeOpts).replace(/\s/g, ' ').trim();
 
-// Add "Tomorrow" + full weekday (within current week)
-  const timeStr = `${obj.hour}:${String(obj.minute).padStart(2, '0')} ${obj.period || ''}`.trim();
+    // Convert both to MST for date math
+    const dMST = new Date(d.toLocaleString('en-US', { timeZone: MST_TZ }));
+    const nowMST = new Date(now.toLocaleString('en-US', { timeZone: MST_TZ }));
 
-  // Convert to MST for accurate date math
-  const dMST = new Date(d.toLocaleString('en-US', { timeZone: MST_TZ }));
-  const nowMST = new Date(now.toLocaleString('en-US', { timeZone: MST_TZ }));
+    // Today
+    if (dMST.toDateString() === nowMST.toDateString()) {
+      return `Today: ${timeStr}`;
+    }
 
-  // Same day
-  const sameDay = dMST.toDateString() === nowMST.toDateString();
+    // Tomorrow
+    const tomorrow = new Date(nowMST);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    if (dMST.toDateString() === tomorrow.toDateString()) {
+      return `Tomorrow: ${timeStr}`;
+    }
 
-  // Tomorrow
-  const tomorrowMST = new Date(nowMST);
-  tomorrowMST.setDate(tomorrowMST.getDate() + 1);
-  const isTomorrow = dMST.toDateString() === tomorrowMST.toDateString();
+    // This week (Mon–Sun)
+    const weekStart = new Date(nowMST);
+    weekStart.setDate(nowMST.getDate() - nowMST.getDay() + 1); // Monday
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6); // Sunday
 
-  // Current week: Monday to Sunday
-  const weekStart = new Date(nowMST);
-  weekStart.setDate(nowMST.getDate() - nowMST.getDay() + 1); // Monday
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekStart.getDate() + 6); // Sunday
+    if (dMST >= weekStart && dMST <= weekEnd) {
+      const fullWeekday = dMST.toLocaleDateString(locale, { weekday: 'long', timeZone: MST_TZ });
+      return `${fullWeekday}: ${timeStr}`;
+    }
 
-  const isThisWeek = dMST >= weekStart && dMST <= weekEnd;
-
-  // Full weekday name
-  const fullWeekday = dMST.toLocaleDateString('en-US', { weekday: 'long', timeZone: MST_TZ });
-
-  if (sameDay) {
-    return `Today: ${timeStr}`;
+    // Default: Wed, Nov 12 — 2:00 PM
+    const shortDate = dMST.toLocaleDateString(locale, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      timeZone: MST_TZ
+    });
+    return `${shortDate} — ${timeStr}`;
+  } catch (e) {
+    return 'Invalid time';
   }
-  if (isTomorrow) {
-    return `Tomorrow: ${timeStr}`;
-  }
-  if (isThisWeek) {
-    return `${fullWeekday}: ${timeStr}`;
-  }
-  return `${obj.weekday}, ${obj.month} ${obj.day} — ${timeStr}`;
+}
 
 // GET /api/next-appointment?appointmentTypeID=8355307
 app.get('/api/next-appointment', async (req, res) => {
+  const timeout = setTimeout(() => {
+    res.status(504).json({ error: 'Request timeout' });
+  }, FUNCTION_TIMEOUT_MS);
+
   try {
-    const appointmentTypeID = req.query.appointmentTypeID;
-    const calendarID = req.query.calendarID;
-    const locale = req.query.locale || 'en-US';
+    const { appointmentTypeID, calendarID, locale } = req.query;
 
     if (!appointmentTypeID && !calendarID) {
-      return res.json({
-        found: false,
-        display: 'No appointment type or calendar specified'
-      });
+      clearTimeout(timeout);
+      return res.json({ found: false, display: 'No type specified' });
     }
 
     const cacheKey = `avail:${appointmentTypeID || calendarID}`;
     const cached = cache.get(cacheKey);
-    if (cached) return res.json(cached);
+    if (cached) {
+      clearTimeout(timeout);
+      return res.json(cached);
+    }
 
-    // Start from today, scan forward up to 30 days
-    const today = new Date();
-    const maxSearchDate = new Date(today);
-    maxSearchDate.setDate(today.getDate() + 30); // 30-day window
-
+    // Start from today
+    const today = new Date().toISOString().split('T')[0];
+    const maxSearchDays = 30;
     let nextSlot = null;
-    let currentDate = new Date(today);
 
-    while (currentDate <= maxSearchDate && !nextSlot) {
-      const dateStr = currentDate.toISOString().split('T')[0];
+    for (let i = 0; i < maxSearchDays && !nextSlot; i++) {
+      const checkDate = new Date();
+      checkDate.setDate(checkDate.getDate() + i);
+      const dateStr = checkDate.toISOString().split('T')[0];
 
-      const params = {
-        date: dateStr,
-        appointmentTypeID: appointmentTypeID || '',
-        calendarID: calendarID || ''
-      };
+      const params = { date: dateStr };
+      if (appointmentTypeID) params.appointmentTypeID = appointmentTypeID;
+      if (calendarID) params.calendarID = calendarID;
 
-      const resp = await axios.get('https://acuityscheduling.com/api/v1/availability/times', {
-        headers: { Authorization: acuityAuthHeader() },
-        params
+      const { data } = await axios.get('https://acuityscheduling.com/api/v1/availability/times', {
+        headers: { Authorization: authHeader },
+        params,
+        timeout: 7000
       });
 
-      const slots = (resp.data || []).sort((a, b) => new Date(a.time) - new Date(b.time));
-
+      const slots = (data || []).sort((a, b) => new Date(a.time) - new Date(b.time));
       const now = new Date();
-      for (const slot of slots) {
-        if (!slot.time) continue;
-        const dt = new Date(slot.time);
-        if (dt > now) {
-          nextSlot = { datetime: slot.time };
+
+      for (const s of slots) {
+        if (s.time && new Date(s.time) > now) {
+          nextSlot = s.time;
           break;
         }
       }
-
-      // Move to next day
-      currentDate.setDate(currentDate.getDate() + 1);
     }
 
-    const payload = nextSlot ? {
-      found: true,
-      display: prettyDateTime(nextSlot.datetime, locale),
-      datetime: nextSlot.datetime,
-      appointment: {
-        type: appointmentTypeID || calendarID,
-        isAvailable: true
-      }
-    } : {
-      found: false,
-      display: 'No availability in next 30 days'
-    };
+    const result = nextSlot
+      ? {
+          found: true,
+          display: formatTime(nextSlot, locale),
+          datetime: nextSlot,
+          appointment: { type: appointmentTypeID || calendarID, isAvailable: true }
+        }
+      : { found: false, display: 'No availability in next 30 days' };
 
-    cache.set(cacheKey, payload, CACHE_TTL_SECONDS);
-    res.json(payload);
-
+    cache.set(cacheKey, result);
+    clearTimeout(timeout);
+    res.json(result);
   } catch (err) {
-    console.error('Availability error:', err?.response?.data || err.message || err);
+    clearTimeout(timeout);
+    console.error('API error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to fetch availability' });
   }
 });
 
-// Webhook
-app.post('/webhook/acuity', (req, res) => {
-  cache.flushAll();
-  res.status(200).send('ok');
-});
-
-// Health
+// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`API running on port ${PORT}`);
-});
+// Vercel serverless export
+module.exports = app;
