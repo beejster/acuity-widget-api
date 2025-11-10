@@ -86,44 +86,55 @@ app.get('/api/next-appointment', async (req, res) => {
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    // Required: date parameter (YYYY-MM-DD)
-    const today = new Date().toISOString().split('T')[0];
+    // Start from today, scan forward up to 30 days
+    const today = new Date();
+    const maxSearchDate = new Date(today);
+    maxSearchDate.setDate(today.getDate() + 30); // 30-day window
 
-    const params = {
-      date: today,
-      appointmentTypeID: appointmentTypeID || '',
-      calendarID: calendarID || ''
-    };
+    let nextSlot = null;
+    let currentDate = new Date(today);
 
-    const resp = await axios.get('https://acuityscheduling.com/api/v1/availability/times', {
-      headers: { Authorization: acuityAuthHeader() },
-      params
-    });
+    while (currentDate <= maxSearchDate && !nextSlot) {
+      const dateStr = currentDate.toISOString().split('T')[0];
 
-    const slots = (resp.data || []).sort((a, b) => new Date(a.time) - new Date(b.time));
+      const params = {
+        date: dateStr,
+        appointmentTypeID: appointmentTypeID || '',
+        calendarID: calendarID || ''
+      };
 
-    let next = null;
-    const now = new Date();
-    for (const slot of slots) {
-      if (!slot.time) continue;
-      const dt = new Date(slot.time);
-      if (dt > now) {
-        next = { datetime: slot.time };
-        break;
+      const resp = await axios.get('https://acuityscheduling.com/api/v1/availability/times', {
+        headers: { Authorization: acuityAuthHeader() },
+        params
+      });
+
+      const slots = (resp.data || []).sort((a, b) => new Date(a.time) - new Date(b.time));
+
+      const now = new Date();
+      for (const slot of slots) {
+        if (!slot.time) continue;
+        const dt = new Date(slot.time);
+        if (dt > now) {
+          nextSlot = { datetime: slot.time };
+          break;
+        }
       }
+
+      // Move to next day
+      currentDate.setDate(currentDate.getDate() + 1);
     }
 
-    const payload = next ? {
+    const payload = nextSlot ? {
       found: true,
-      display: prettyDateTime(next.datetime, locale),
-      datetime: next.datetime,
+      display: prettyDateTime(nextSlot.datetime, locale),
+      datetime: nextSlot.datetime,
       appointment: {
         type: appointmentTypeID || calendarID,
         isAvailable: true
       }
     } : {
       found: false,
-      display: 'No availability today'
+      display: 'No availability in next 30 days'
     };
 
     cache.set(cacheKey, payload, CACHE_TTL_SECONDS);
