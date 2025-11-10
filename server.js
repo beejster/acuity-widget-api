@@ -81,7 +81,7 @@ app.get('/api/next-appointment', async (req, res) => {
       sort: 'datetime.asc'
     };
     if (calendarID) params.calendarID = calendarID;
-    if (appointmentType) params.appointmentType = appointmentType;
+    if (appointmentType) params.appointmentTypeID = appointmentType;
 
     const resp = await axios.get('https://acuityscheduling.com/api/v1/appointments', {
       headers: { Authorization: acuityAuthHeader() },
