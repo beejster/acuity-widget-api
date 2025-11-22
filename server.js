@@ -36,46 +36,45 @@ function formatTime(isoString, locale = 'en-US') {
     const d = new Date(isoString);
     const now = new Date();
 
-    // Format time in MST
-    const timeOpts = { timeZone: MST_TZ, hour: 'numeric', minute: '2-digit', hour12: true };
-    const timeStr = d.toLocaleTimeString(locale, timeOpts).replace(/\s/g, ' ').trim();
+    // Force everything into MST for accurate date math
+    const optionsMST = { timeZone: MST_TZ };
+    const dMST = new Date(d.toLocaleString('en-US', optionsMST));
+    const nowMST = new Date(now.toLocaleString('en-US', optionsMST));
 
-    // Convert both to MST for date math
-    const dMST = new Date(d.toLocaleString('en-US', { timeZone: MST_TZ }));
-    const nowMST = new Date(now.toLocaleString('en-US', { timeZone: MST_TZ }));
+    // Time string in MST (e.g., "2:30 PM")
+    const timeStr = d.toLocaleTimeString(locale, {
+      timeZone: MST_TZ,
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    }).replace(/\s+/g, ' ').trim();
 
-    // Today
-    if (dMST.toDateString() === nowMST.toDateString()) {
-      return `Today at ${timeStr}`;
-    }
+    // === Calculate days difference in MST ===
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const daysDiff = Math.floor((dMST - nowMST) / msPerDay);
 
-    // Tomorrow
-    const tomorrow = new Date(nowMST);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    if (dMST.toDateString() === tomorrow.toDateString()) {
-      return `Tomorrow at ${timeStr}`;
-    }
+    // 0–6 days from today → show full weekday only
+    if (daysDiff >= 0 && daysDiff <= 6) {
+      if (daysDiff === 0) return `Today at ${timeStr}`;
+      if (daysDiff === 1) return `Tomorrow at ${timeStr}`;
 
-    // This week (Mon–Sun)
-    const weekStart = new Date(nowMST);
-    weekStart.setDate(nowMST.getDate() - nowMST.getDay() + 1); // Monday
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6); // Sunday
-
-    if (dMST >= weekStart && dMST <= weekEnd) {
-      const fullWeekday = dMST.toLocaleDateString(locale, { weekday: 'long', timeZone: MST_TZ });
+      const fullWeekday = dMST.toLocaleDateString(locale, {
+        weekday: 'long',
+        timeZone: MST_TZ
+      });
       return `${fullWeekday} at ${timeStr}`;
     }
 
-    // Default: Wed, Nov 12 — 2:00 PM
-    const shortDate = dMST.toLocaleDateString(locale, {
-      weekday: 'short',
+    // 7+ days away → month + day only (no weekday)
+    const farDate = dMST.toLocaleDateString(locale, {
       month: 'short',
       day: 'numeric',
       timeZone: MST_TZ
     });
-    return `${shortDate} at ${timeStr}`;
+    return `${farDate} at ${timeStr}`;
+
   } catch (e) {
+    console.error('formatTime error:', e);
     return 'Invalid time';
   }
 }
